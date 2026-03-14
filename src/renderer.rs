@@ -172,6 +172,12 @@ impl SlideRenderer {
                     *y += 1;
                 }
             }
+            SlideElement::Image(img) => {
+                let img_text = format!("[Image: {}]", img.url);
+                lines.push(Line::from(img_text));
+                *y += 1;
+            }
+            SlideElement::ColumnBreak | SlideElement::Image(_) => {}
         }
     }
 

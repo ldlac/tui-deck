@@ -225,7 +225,7 @@ fn main() -> Result<()> {
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    let slides = parser::parse_markdown(&content);
+    let (slides, _settings) = parser::parse_markdown(&content);
 
     if slides.is_empty() {
         anyhow::bail!("No slides found in {}", args.file.display());

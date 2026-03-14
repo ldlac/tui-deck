@@ -1,18 +1,72 @@
-# Welcome to tui-deck
+---
+marp: true
+theme: default
+paginate: true
+class: invert
+backgroundColor: #1a1a2e
+---
+
+# Marp-Compatible tui-deck
 
 A terminal slide deck presenter
 
-<!-- notes: Welcome everyone! This is a demo of tui-deck, a terminal-based presentation tool. -->
+<!-- notes: Welcome everyone! Today I'll show you tui-deck with full Marp compatibility. -->
 
 ---
 
-## Features
+## Marp Front Matter
 
-- **ASCII art** diagrams supported
-- **Syntax highlighting** for code blocks
-- **Presenter notes** in dual-window mode
+```yaml
+---
+marp: true
+theme: default
+paginate: true
+class: invert
+backgroundColor: #1a1a2e
+---
+```
 
-<!-- notes: These are the key features. We'll demonstrate each one. -->
+- `marp: true` - Enable Marp mode
+- `theme:` - Theme name
+- `paginate:` - Show page numbers
+- `class:` - Global CSS classes
+- `backgroundColor:` - Global background
+
+<!-- notes: The front matter goes at the very top of your markdown file. -->
+
+---
+
+## Slide Directives
+
+<!-- class: lead -->
+
+### Class Directives
+
+- `<!-- class: lead -->` - Apply class to next slide
+- `<!-- _class: lead -->` - Apply to current slide
+- `<!-- bg: #ff0000 -->` - Background color
+- `<!-- paginate: true -->` - Enable pagination
+
+<!-- notes: Directives are HTML comments that control slide behavior. -->
+
+---
+
+## Presenter Notes
+
+### Multiple Syntax Supported
+
+1. `<!-- notes: Your notes here -->`
+2.
+
+```
+???
+Your notes here
+???
+```
+
+Both work identically!
+
+<!-- notes: Use presenter notes to add speaker notes to your slides. -->
 
 ---
 
@@ -20,11 +74,14 @@ A terminal slide deck presenter
 
 ```rust
 fn main() {
-    println!("Hello, terminal!");
+    let x = vec![1, 2, 3];
+    for i in x.iter() {
+        println!("{}", i);
+    }
 }
 ```
 
-<!-- notes: Code blocks are syntax highlighted with GitHub Dark theme. -->
+Works with 100+ languages!
 
 ---
 
@@ -34,25 +91,28 @@ fn main() {
     ┌─────────────┐
     │   RUST      │
     │  ┌───────┐  │
-    │  │       │  │
+    │  │  ★    │  │
     │  └───────┘  │
     └─────────────┘
 ```
 
-<!-- notes: ASCII art is preserved exactly as written. -->
+Preserved exactly as written.
 
 ---
 
 ## Navigation
 
-- Arrow keys: Navigate slides
-- `q`: Quit
-- `j`/`k` or `Space`: Next/Previous
-
-<!-- notes: These are all the navigation keys available. -->
+| Key               | Action     |
+| ----------------- | ---------- |
+| `j` / `Space`     | Next slide |
+| `k` / `Backspace` | Previous   |
+| `h`               | Previous   |
+| `l`               | Next       |
+| `←` `→`           | Arrow keys |
+| `q`               | Quit       |
 
 ---
 
-## Questions?
+# Thank You!
 
-GitHub: @yourusername/tui-deck
+GitHub: @ldlac/tui-deck
