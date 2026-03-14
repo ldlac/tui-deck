@@ -59,10 +59,6 @@ impl AppState {
         &self.slides[self.current_index]
     }
 
-    fn next_slide(&self) -> Option<&Slide> {
-        self.slides.get(self.current_index + 1)
-    }
-
     fn total_slides(&self) -> usize {
         self.slides.len()
     }
@@ -124,92 +120,6 @@ fn render_slide(frame: &mut Frame, state: &AppState) {
     let progress =
         Paragraph::new(progress_text).style(Style::default().fg(Color::Rgb(100, 100, 100)));
     frame.render_widget(progress, chunks[1]);
-}
-
-fn render_presenter(frame: &mut Frame, state: &AppState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(frame.area());
-
-    let current_slide = state.current_slide();
-    let next_slide = state.next_slide();
-
-    let renderer = SlideRenderer::new(chunks[0].width as usize, chunks[0].height as usize);
-    let current_lines = renderer.render(current_slide);
-
-    let current = Paragraph::new(
-        current_lines
-            .iter()
-            .map(|l| {
-                Line::from(
-                    l.spans
-                        .iter()
-                        .map(|s| ratatui::text::Span::styled(s.content.clone(), s.style))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
-    .block(
-        Block::default()
-            .title(" Current Slide ")
-            .borders(Borders::ALL),
-    )
-    .style(Style::default().bg(Color::Rgb(26, 26, 46)));
-
-    frame.render_widget(current, chunks[0]);
-
-    if let Some(next) = next_slide {
-        let next_renderer = SlideRenderer::new(chunks[1].width as usize, chunks[1].height as usize);
-        let next_lines = next_renderer.render(next);
-
-        let next_paragraph = Paragraph::new(
-            next_lines
-                .iter()
-                .map(|l| {
-                    Line::from(
-                        l.spans
-                            .iter()
-                            .map(|s| {
-                                ratatui::text::Span::styled(
-                                    s.content.clone(),
-                                    s.style.fg(Color::Rgb(128, 128, 128)),
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        )
-        .block(Block::default().title(" Next Slide ").borders(Borders::ALL))
-        .style(Style::default().bg(Color::Rgb(26, 26, 46)));
-
-        frame.render_widget(next_paragraph, chunks[1]);
-    }
-
-    let notes_text = current_slide
-        .notes
-        .clone()
-        .unwrap_or_else(|| "No notes".to_string());
-
-    let notes = Paragraph::new(notes_text)
-        .block(
-            Block::default()
-                .title(format!(
-                    " Notes (Slide {}/{}) ",
-                    state.current_index + 1,
-                    state.total_slides()
-                ))
-                .borders(Borders::ALL),
-        )
-        .style(Style::default().fg(Color::White));
-
-    frame.render_widget(notes, chunks[2]);
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

@@ -2,7 +2,6 @@ use ratatui::prelude::Stylize;
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Block,
 };
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
@@ -49,18 +48,37 @@ impl SlideRenderer {
             lines.push(Line::from(""));
         }
 
-        let title_style = Style::default()
-            .fg(Color::Rgb(243, 156, 18)) // Amber accent
-            .bold();
+        let title_style = Style::default().fg(Color::Rgb(243, 156, 18)).bold();
 
         let padding = (self.width.saturating_sub(title.len())) / 2;
         let padded_title = format!("{}{}", " ".repeat(padding), title);
         lines.push(Line::from(Span::styled(padded_title, title_style)));
 
-        if let Some(ref notes) = slide.notes {
-            for _ in 0..1 {
-                lines.push(Line::from(""));
+        if !slide.content.is_empty() {
+            lines.push(Line::from(""));
+            for elem in &slide.content {
+                match elem {
+                    SlideElement::Paragraph(text) => {
+                        let p = self.wrap_text(text, self.width.saturating_sub(4));
+                        for line in &p {
+                            let pl = (self.width.saturating_sub(line.len())) / 2;
+                            lines.push(Line::from(format!("{}{}", " ".repeat(pl), line)));
+                        }
+                    }
+                    SlideElement::BulletList(items) => {
+                        for item in items {
+                            let item_str = format!("  • {}", item);
+                            let pl = (self.width.saturating_sub(item_str.len())) / 2;
+                            lines.push(Line::from(format!("{}{}", " ".repeat(pl), item_str)));
+                        }
+                    }
+                    _ => {}
+                }
             }
+        }
+
+        if let Some(ref notes) = slide.notes {
+            lines.push(Line::from(""));
             let notes_style = Style::default().fg(Color::Rgb(100, 100, 100));
             let padded_notes = format!("{}{}", " ".repeat(padding), notes);
             lines.push(Line::from(Span::styled(padded_notes, notes_style)));
@@ -165,6 +183,39 @@ impl SlideRenderer {
                 )));
                 *y += 1;
             }
+            SlideElement::Table(rows) => {
+                if rows.is_empty() {
+                    return;
+                }
+                let num_cols = rows[0].len();
+                let mut col_widths: Vec<usize> = vec![0; num_cols];
+                for row in rows {
+                    for (i, cell) in row.iter().enumerate() {
+                        if i < num_cols {
+                            col_widths[i] = col_widths[i].max(cell.len());
+                        }
+                    }
+                }
+                for (row_idx, row) in rows.iter().enumerate() {
+                    let cells: Vec<String> = row
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cell)| {
+                            let width = col_widths[i];
+                            format!("{}{}", cell, " ".repeat(width.saturating_sub(cell.len())))
+                        })
+                        .collect();
+                    let row_str = cells.join(" │ ");
+                    lines.push(Line::from(row_str));
+                    *y += 1;
+                    if row_idx == 0 && rows.len() > 1 {
+                        let sep: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w)).collect();
+                        let sep_str = sep.join("─┼─");
+                        lines.push(Line::from(sep_str));
+                        *y += 1;
+                    }
+                }
+            }
             SlideElement::Plain(text) => {
                 let wrapped = self.wrap_text(text, self.width.saturating_sub(4));
                 for line in wrapped {
@@ -177,7 +228,7 @@ impl SlideRenderer {
                 lines.push(Line::from(img_text));
                 *y += 1;
             }
-            SlideElement::ColumnBreak | SlideElement::Image(_) => {}
+            SlideElement::ColumnBreak => {}
         }
     }
 

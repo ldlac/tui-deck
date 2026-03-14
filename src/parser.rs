@@ -63,6 +63,7 @@ pub enum SlideElement {
     Plain(String),
     Image(ImageSpec),
     ColumnBreak,
+    Table(Vec<Vec<String>>),
 }
 
 pub struct MarkdownParser {
@@ -78,6 +79,12 @@ pub struct MarkdownParser {
     notes_buffer: String,
     settings: DeckSettings,
     pending_class: Option<Vec<String>>,
+    in_table: bool,
+    table_headers: Vec<String>,
+    current_table_row: Vec<String>,
+    table_rows: Vec<Vec<String>>,
+    in_table_cell: bool,
+    current_cell_content: String,
 }
 
 #[derive(Clone)]
@@ -101,6 +108,12 @@ impl MarkdownParser {
             notes_buffer: String::new(),
             settings: DeckSettings::default(),
             pending_class: None,
+            in_table: false,
+            table_headers: Vec::new(),
+            current_table_row: Vec::new(),
+            table_rows: Vec::new(),
+            in_table_cell: false,
+            current_cell_content: String::new(),
         }
     }
 
@@ -239,7 +252,10 @@ impl MarkdownParser {
                 self.in_ascii_block = false;
             }
             Event::Text(text) => {
-                if self.in_presenter_notes {
+                let trimmed = text.trim();
+                if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+                    self.finish_current_slide();
+                } else if self.in_presenter_notes {
                     if !self.notes_buffer.is_empty() {
                         self.notes_buffer.push('\n');
                     }
@@ -251,6 +267,13 @@ impl MarkdownParser {
                         }
                         code.push_str(&text);
                     }
+                } else if self.in_table_cell {
+                    if !self.current_cell_content.is_empty() {
+                        self.current_cell_content.push(' ');
+                    }
+                    self.current_cell_content.push_str(&text);
+                } else if self.in_table {
+                    self.current_table_row.push(text.to_string());
                 } else if let Some(ref mut list) = self.current_list {
                     list.push(text.to_string());
                 } else if let Some(ref mut slide) = self.current_slide {
@@ -284,6 +307,58 @@ impl MarkdownParser {
                 }
             }
             Event::End(TagEnd::Item) => {}
+            Event::Start(Tag::Table(_)) => {
+                self.flush_list();
+                self.in_table = true;
+                self.table_headers.clear();
+                self.current_table_row.clear();
+                self.table_rows.clear();
+            }
+            Event::End(TagEnd::Table) => {
+                if !self.table_headers.is_empty() {
+                    self.table_rows.insert(0, self.table_headers.clone());
+                }
+                if !self.table_rows.is_empty() {
+                    self.current_elements
+                        .push(SlideElement::Table(std::mem::take(&mut self.table_rows)));
+                }
+                self.in_table = false;
+                self.table_headers.clear();
+                self.current_table_row.clear();
+            }
+            Event::Start(Tag::TableHead) => {
+                self.current_table_row.clear();
+            }
+            Event::End(TagEnd::TableHead) => {
+                self.table_headers = self.current_table_row.clone();
+            }
+            Event::Start(Tag::TableRow) => {
+                self.current_table_row.clear();
+            }
+            Event::End(TagEnd::TableRow) => {
+                if self.in_table {
+                    let is_separator = self
+                        .current_table_row
+                        .iter()
+                        .all(|c| c.chars().all(|ch| ch == '-' || ch == ' ' || ch == ':'));
+                    if !is_separator && !self.current_table_row.is_empty() {
+                        self.table_rows
+                            .push(std::mem::take(&mut self.current_table_row));
+                        self.current_table_row = Vec::new();
+                    }
+                }
+            }
+            Event::Start(Tag::TableCell) => {
+                self.in_table_cell = true;
+                self.current_cell_content.clear();
+            }
+            Event::End(TagEnd::TableCell) => {
+                if self.in_table_cell {
+                    self.current_table_row
+                        .push(std::mem::take(&mut self.current_cell_content));
+                    self.in_table_cell = false;
+                }
+            }
             Event::Rule => {
                 self.finish_current_slide();
             }
@@ -291,14 +366,18 @@ impl MarkdownParser {
                 self.process_html_comment(&html.to_string());
             }
             Event::Code(code) => {
-                if let Some(ref mut list) = self.current_list {
+                if self.in_table_cell {
+                    if !self.current_cell_content.is_empty() {
+                        self.current_cell_content.push(' ');
+                    }
+                    self.current_cell_content.push_str(&format!("`{}`", code));
+                } else if let Some(ref mut list) = self.current_list {
                     list.push(format!("`{}`", code));
                 } else {
                     self.current_elements
                         .push(SlideElement::Plain(format!("`{}`", code)));
                 }
             }
-            Event::Text(text) if self.current_list.is_some() => {}
             _ => {}
         }
     }
