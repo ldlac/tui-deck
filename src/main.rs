@@ -1,4 +1,5 @@
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,7 +9,6 @@ use clap::Parser;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute, terminal,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -44,16 +44,14 @@ struct AppState {
     slides: Vec<Slide>,
     current_index: usize,
     start_time: Instant,
-    is_presenter_mode: bool,
 }
 
 impl AppState {
-    fn new(slides: Vec<Slide>, is_presenter: bool) -> Self {
+    fn new(slides: Vec<Slide>) -> Self {
         Self {
             slides,
             current_index: 0,
             start_time: Instant::now(),
-            is_presenter_mode: is_presenter,
         }
     }
 
@@ -62,11 +60,7 @@ impl AppState {
     }
 
     fn next_slide(&self) -> Option<&Slide> {
-        if self.current_index + 1 < self.slides.len() {
-            Some(&self.slides[self.current_index + 1])
-        } else {
-            None
-        }
+        self.slides.get(self.current_index + 1)
     }
 
     fn total_slides(&self) -> usize {
@@ -93,7 +87,7 @@ impl AppState {
     }
 }
 
-fn render_app(frame: &mut Frame, state: &AppState) {
+fn render_slide(frame: &mut Frame, state: &AppState) {
     let chunks = Layout::default()
         .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
@@ -218,26 +212,263 @@ fn render_presenter(frame: &mut Frame, state: &AppState) {
     frame.render_widget(notes, chunks[2]);
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PresenterMessage {
+    current_slide: usize,
+    total_slides: usize,
+    notes: Option<String>,
+    title: Option<String>,
+}
 
-    let mut file = std::fs::File::open(&args.file)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
+fn create_message(slide: &Slide, total: usize) -> PresenterMessage {
+    PresenterMessage {
+        current_slide: slide.index,
+        total_slides: total,
+        notes: slide.notes.clone(),
+        title: slide.title.clone(),
+    }
+}
 
-    let (slides, _settings) = parser::parse_markdown(&content);
+struct ClientState {
+    current_index: usize,
+    total_slides: usize,
+    notes: Option<String>,
+    title: Option<String>,
+    start_time: Instant,
+    connected: bool,
+}
 
-    if slides.is_empty() {
-        anyhow::bail!("No slides found in {}", args.file.display());
+impl ClientState {
+    fn new() -> Self {
+        Self {
+            current_index: 0,
+            total_slides: 0,
+            notes: None,
+            title: None,
+            start_time: Instant::now(),
+            connected: false,
+        }
     }
 
-    let state = Arc::new(Mutex::new(AppState::new(slides, args.presenter)));
+    fn elapsed_time(&self) -> String {
+        let elapsed = self.start_time.elapsed();
+        format!(
+            "{:02}:{:02}",
+            elapsed.as_secs() / 60,
+            elapsed.as_secs() % 60
+        )
+    }
+}
+
+fn run_presenter_client(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+
+    terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), terminal::EnterAlternateScreen)?;
+
+    let client_state = Arc::new(Mutex::new(ClientState::new()));
+    let client_state_clone = client_state.clone();
+
+    std::thread::spawn(
+        move || match std::os::unix::net::UnixStream::connect(&socket_path) {
+            Ok(mut stream) => loop {
+                let mut buf = [0u8; 4096];
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(msg) = serde_json::from_slice::<PresenterMessage>(&buf[..n]) {
+                            if let Ok(mut state) = client_state_clone.lock() {
+                                state.current_index = msg.current_slide;
+                                state.total_slides = msg.total_slides;
+                                state.notes = msg.notes;
+                                state.title = msg.title;
+                                state.connected = true;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            },
+            Err(e) => {
+                eprintln!("Connection failed: {}", e);
+            }
+        },
+    );
+
+    let mut quit = false;
+
+    while !quit {
+        let state = {
+            match client_state.lock() {
+                Ok(s) => (
+                    s.current_index,
+                    s.total_slides,
+                    s.notes.clone(),
+                    s.elapsed_time(),
+                    s.connected,
+                ),
+                Err(_) => continue,
+            }
+        };
+
+        terminal
+            .draw(|f| {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Percentage(50),
+                        Constraint::Percentage(25),
+                        Constraint::Percentage(25),
+                    ])
+                    .split(f.area());
+
+                if !state.4 {
+                    let connecting = Paragraph::new("Connecting to presentation...")
+                        .style(Style::default().fg(Color::Yellow));
+                    f.render_widget(connecting, chunks[0]);
+                    return;
+                }
+
+                let slide = &slides[state.0.min(slides.len().saturating_sub(1))];
+
+                let renderer =
+                    SlideRenderer::new(chunks[0].width as usize, chunks[0].height as usize);
+                let current_lines = renderer.render(slide);
+
+                let current = Paragraph::new(
+                    current_lines
+                        .iter()
+                        .map(|l| {
+                            Line::from(
+                                l.spans
+                                    .iter()
+                                    .map(|s| {
+                                        ratatui::text::Span::styled(s.content.clone(), s.style)
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .block(
+                    Block::default()
+                        .title(" Current Slide ")
+                        .borders(Borders::ALL),
+                )
+                .style(Style::default().bg(Color::Rgb(26, 26, 46)));
+
+                f.render_widget(current, chunks[0]);
+
+                if state.0 + 1 < slides.len() {
+                    let next = &slides[state.0 + 1];
+                    let next_renderer =
+                        SlideRenderer::new(chunks[1].width as usize, chunks[1].height as usize);
+                    let next_lines = next_renderer.render(next);
+
+                    let next_paragraph = Paragraph::new(
+                        next_lines
+                            .iter()
+                            .map(|l| {
+                                Line::from(
+                                    l.spans
+                                        .iter()
+                                        .map(|s| {
+                                            ratatui::text::Span::styled(
+                                                s.content.clone(),
+                                                s.style.fg(Color::Rgb(128, 128, 128)),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .block(Block::default().title(" Next Slide ").borders(Borders::ALL))
+                    .style(Style::default().bg(Color::Rgb(26, 26, 46)));
+
+                    f.render_widget(next_paragraph, chunks[1]);
+                }
+
+                let notes_text = state.2.clone().unwrap_or_else(|| "No notes".to_string());
+
+                let notes = Paragraph::new(notes_text)
+                    .block(
+                        Block::default()
+                            .title(format!(" Notes (Slide {}/{}) ", state.0 + 1, state.1))
+                            .borders(Borders::ALL),
+                    )
+                    .style(Style::default().fg(Color::White));
+
+                f.render_widget(notes, chunks[2]);
+            })
+            .unwrap();
+
+        if event::poll(std::time::Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    if let KeyCode::Char('q') | KeyCode::Char('Q') = key.code {
+                        quit = true;
+                    }
+                }
+            }
+        }
+    }
+
+    terminal::disable_raw_mode()?;
+    execute!(std::io::stdout(), terminal::LeaveAlternateScreen)?;
+
+    Ok(())
+}
+
+fn run_server(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
+    if socket_path.exists() {
+        std::fs::remove_file(&socket_path)?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)?;
+    listener.set_nonblocking(true)?;
+
+    let state = Arc::new(Mutex::new(AppState::new(slides)));
 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     terminal::enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    execute!(std::io::stdout(), terminal::EnterAlternateScreen)?;
+
+    let state_clone = state.clone();
+
+    std::thread::spawn(move || {
+        let mut clients: Vec<std::os::unix::net::UnixStream> = Vec::new();
+
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(true);
+                    clients.push(stream);
+                }
+                Err(_) => {}
+            }
+
+            let current_state = {
+                match state_clone.lock() {
+                    Ok(s) => (s.current_slide().clone(), s.total_slides()),
+                    Err(_) => continue,
+                }
+            };
+
+            let msg = serde_json::to_vec(&create_message(&current_state.0, current_state.1))
+                .unwrap_or_default();
+
+            clients.retain(|mut client| match client.write_all(&msg) {
+                Ok(_) => true,
+                Err(_) => false,
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
 
     loop {
         let should_quit = {
@@ -285,28 +516,13 @@ fn main() -> Result<()> {
 
         let current_state = {
             let s = state.lock().unwrap();
-            (
-                s.current_index,
-                s.total_slides(),
-                s.is_presenter_mode,
-                s.current_slide().clone(),
-            )
+            (s.current_slide().clone(), s.total_slides())
         };
 
         terminal
             .draw(|f| {
-                let mut state_guard = AppState {
-                    slides: vec![current_state.3],
-                    current_index: 0,
-                    start_time: Instant::now(),
-                    is_presenter_mode: current_state.2,
-                };
-
-                if current_state.2 {
-                    render_presenter(f, &mut state_guard);
-                } else {
-                    render_app(f, &mut state_guard);
-                }
+                let mut state_guard = AppState::new(vec![current_state.0]);
+                render_slide(f, &mut state_guard);
             })
             .unwrap();
 
@@ -315,8 +531,30 @@ fn main() -> Result<()> {
         }
     }
 
+    let _ = std::fs::remove_file(&socket_path);
+
     terminal::disable_raw_mode()?;
-    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+    execute!(std::io::stdout(), terminal::LeaveAlternateScreen)?;
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let mut file = std::fs::File::open(&args.file)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+
+    let (slides, _) = parser::parse_markdown(&content);
+
+    if slides.is_empty() {
+        anyhow::bail!("No slides found in {}", args.file.display());
+    }
+
+    if args.presenter {
+        run_presenter_client(args.socket, slides)
+    } else {
+        run_server(args.socket, slides)
+    }
 }

@@ -41,12 +41,32 @@ Options:
 
 | Key               | Action           |
 | ----------------- | ---------------- |
-| `j` / `Space`     | Next slide       |
+| `j` / `Space`    | Next slide       |
 | `k` / `Backspace` | Previous slide   |
 | `h`               | Previous slide   |
 | `l`               | Next slide       |
 | `←` / `→`         | Arrow navigation |
 | `q`               | Quit             |
+
+## Dual-Window Presenter Mode
+
+Run the presentation in one terminal, then connect a presenter console in another:
+
+```bash
+# Terminal 1: Start the presentation
+./target/release/tui-deck slides.md
+
+# Terminal 2: Connect as presenter console
+./target/release/tui-deck slides.md --presenter --socket /tmp/tui-deck.sock
+```
+
+The presenter window shows:
+- Current slide (large)
+- Next slide preview (smaller)
+- Presenter notes
+- Timer
+
+Slide changes sync automatically via Unix socket.
 
 ## Markdown Format
 
