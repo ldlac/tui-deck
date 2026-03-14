@@ -26,9 +26,13 @@ impl SlideRenderer {
     pub fn render(&self, slide: &Slide) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
-        match slide.slide_type {
-            SlideType::Title => self.render_title_slide(slide, &mut lines),
-            _ => self.render_content_slide(slide, &mut lines),
+        let has_title = slide.title.is_some();
+        let has_content = !slide.content.is_empty();
+
+        if has_title && !has_content {
+            self.render_title_slide(slide, &mut lines);
+        } else {
+            self.render_content_slide(slide, &mut lines);
         }
 
         // Pad to fill screen

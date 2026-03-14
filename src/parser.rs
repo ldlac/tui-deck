@@ -279,6 +279,9 @@ impl MarkdownParser {
                 } else if let Some(ref mut slide) = self.current_slide {
                     if slide.title.is_none() && !text.trim().is_empty() {
                         slide.title = Some(text.trim().to_string());
+                    } else if !text.trim().is_empty() {
+                        self.current_elements
+                            .push(SlideElement::Plain(text.to_string()));
                     }
                 } else if !text.trim().is_empty() {
                     self.current_elements
