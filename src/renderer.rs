@@ -201,16 +201,16 @@ impl SlideRenderer {
                         .iter()
                         .enumerate()
                         .map(|(i, cell)| {
-                            let width = col_widths[i];
-                            format!("{}{}", cell, " ".repeat(width.saturating_sub(cell.len())))
+                            let w = col_widths[i];
+                            format!("{}{}", cell, " ".repeat(w.saturating_sub(cell.len())))
                         })
                         .collect();
-                    let row_str = cells.join(" │ ");
+                    let row_str = cells.join(" | ");
                     lines.push(Line::from(row_str));
                     *y += 1;
                     if row_idx == 0 && rows.len() > 1 {
                         let sep: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w)).collect();
-                        let sep_str = sep.join("─┼─");
+                        let sep_str = sep.join(" | ");
                         lines.push(Line::from(sep_str));
                         *y += 1;
                     }
