@@ -41,7 +41,7 @@ Options:
 
 | Key               | Action           |
 | ----------------- | ---------------- |
-| `j` / `Space`    | Next slide       |
+| `j` / `Space`     | Next slide       |
 | `k` / `Backspace` | Previous slide   |
 | `h`               | Previous slide   |
 | `l`               | Next slide       |
@@ -57,10 +57,11 @@ Run the presentation in one terminal, then connect a presenter console in anothe
 ./target/release/tui-deck slides.md
 
 # Terminal 2: Connect as presenter console
-./target/release/tui-deck slides.md --presenter --socket /tmp/tui-deck.sock
+./target/release/tui-deck slides.md --presenter
 ```
 
 The presenter window shows:
+
 - Current slide (large)
 - Next slide preview (smaller)
 - Presenter notes
