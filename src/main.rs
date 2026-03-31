@@ -23,7 +23,7 @@ use std::sync::Mutex;
 mod parser;
 mod renderer;
 
-use parser::Slide;
+use parser::{DeckSettings, Slide};
 use renderer::SlideRenderer;
 
 #[derive(Parser)]
@@ -44,14 +44,16 @@ struct AppState {
     slides: Vec<Slide>,
     current_index: usize,
     start_time: Instant,
+    settings: DeckSettings,
 }
 
 impl AppState {
-    fn new(slides: Vec<Slide>) -> Self {
+    fn new(slides: Vec<Slide>, settings: DeckSettings) -> Self {
         Self {
             slides,
             current_index: 0,
             start_time: Instant::now(),
+            settings,
         }
     }
 
@@ -89,8 +91,19 @@ fn render_slide(frame: &mut Frame, state: &AppState) {
         .split(frame.area());
 
     let slide = state.current_slide();
-    let renderer = SlideRenderer::new(chunks[0].width as usize, chunks[0].height as usize);
+    let renderer = SlideRenderer::new(
+        chunks[0].width as usize,
+        chunks[0].height as usize,
+        state.settings.clone(),
+        state.total_slides(),
+    );
     let lines = renderer.render(slide);
+
+    let bg_color = slide
+        .background_color
+        .as_deref()
+        .and_then(|c| parse_css_color_simple(c))
+        .unwrap_or(Color::Rgb(26, 26, 46));
 
     let slide_paragraph = Paragraph::new(
         lines
@@ -106,7 +119,7 @@ fn render_slide(frame: &mut Frame, state: &AppState) {
             .collect::<Vec<_>>(),
     )
     .block(Block::default().title(" tui-deck ").borders(Borders::ALL))
-    .style(Style::default().bg(Color::Rgb(26, 26, 46)));
+    .style(Style::default().bg(bg_color));
 
     frame.render_widget(slide_paragraph, chunks[0]);
 
@@ -170,7 +183,11 @@ impl ClientState {
     }
 }
 
-fn run_presenter_client(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
+fn run_presenter_client(
+    socket_path: PathBuf,
+    slides: Vec<Slide>,
+    settings: DeckSettings,
+) -> Result<()> {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -242,8 +259,12 @@ fn run_presenter_client(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> 
 
                 let slide = &slides[state.0.min(slides.len().saturating_sub(1))];
 
-                let renderer =
-                    SlideRenderer::new(chunks[0].width as usize, chunks[0].height as usize);
+                let renderer = SlideRenderer::new(
+                    chunks[0].width as usize,
+                    chunks[0].height as usize,
+                    settings.clone(),
+                    slides.len(),
+                );
                 let current_lines = renderer.render(slide);
 
                 let current = Paragraph::new(
@@ -272,8 +293,12 @@ fn run_presenter_client(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> 
 
                 if state.0 + 1 < slides.len() {
                     let next = &slides[state.0 + 1];
-                    let next_renderer =
-                        SlideRenderer::new(chunks[1].width as usize, chunks[1].height as usize);
+                    let next_renderer = SlideRenderer::new(
+                        chunks[1].width as usize,
+                        chunks[1].height as usize,
+                        settings.clone(),
+                        slides.len(),
+                    );
                     let next_lines = next_renderer.render(next);
 
                     let next_paragraph = Paragraph::new(
@@ -331,7 +356,7 @@ fn run_presenter_client(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> 
     Ok(())
 }
 
-fn run_server(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
+fn run_server(socket_path: PathBuf, slides: Vec<Slide>, settings: DeckSettings) -> Result<()> {
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
     }
@@ -339,7 +364,7 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
     let listener = UnixListener::bind(&socket_path)?;
     listener.set_nonblocking(true)?;
 
-    let state = Arc::new(Mutex::new(AppState::new(slides)));
+    let state = Arc::new(Mutex::new(AppState::new(slides, settings)));
 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -424,15 +449,10 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
             }
         };
 
-        let current_state = {
-            let s = state.lock().unwrap();
-            (s.current_slide().clone(), s.total_slides())
-        };
-
         terminal
             .draw(|f| {
-                let mut state_guard = AppState::new(vec![current_state.0]);
-                render_slide(f, &mut state_guard);
+                let s = state.lock().unwrap();
+                render_slide(f, &s);
             })
             .unwrap();
 
@@ -449,6 +469,19 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>) -> Result<()> {
     Ok(())
 }
 
+fn parse_css_color_simple(color: &str) -> Option<Color> {
+    let trimmed = color.trim();
+    if let Some(hex) = trimmed.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(Color::Rgb(r, g, b));
+        }
+    }
+    None
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -456,15 +489,15 @@ fn main() -> Result<()> {
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    let (slides, _) = parser::parse_markdown(&content);
+    let (slides, settings) = parser::parse_markdown(&content);
 
     if slides.is_empty() {
         anyhow::bail!("No slides found in {}", args.file.display());
     }
 
     if args.presenter {
-        run_presenter_client(args.socket, slides)
+        run_presenter_client(args.socket, slides, settings)
     } else {
-        run_server(args.socket, slides)
+        run_server(args.socket, slides, settings)
     }
 }
