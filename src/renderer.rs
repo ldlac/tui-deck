@@ -405,15 +405,8 @@ impl SlideRenderer {
                 } else {
                     let highlighted = self.highlight_code(code, lang);
                     for line in highlighted {
-                        let mut spans = vec![Span::styled(
-                            "    ".to_string(),
-                            Style::default().bg(theme.code_bg),
-                        )];
+                        let mut spans = vec![Span::raw("    ".to_string())];
                         spans.extend(line);
-                        spans.push(Span::styled(
-                            " ".to_string(),
-                            Style::default().bg(theme.code_bg),
-                        ));
                         lines.push(Line::from(spans));
                         *y += 1;
                     }
@@ -693,8 +686,7 @@ impl SlideRenderer {
                         syntect_style.foreground.g,
                         syntect_style.foreground.b,
                     );
-                    let bg = Color::Rgb(13, 13, 26);
-                    Span::styled(text.to_string(), Style::default().fg(fg).bg(bg))
+                    Span::styled(text.to_string(), Style::default().fg(fg))
                 })
                 .collect();
 
