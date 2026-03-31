@@ -2,7 +2,7 @@
 marp: true
 theme: default
 paginate: true
-class: invert
+# class: invert
 backgroundColor: #1a1a2e
 header: "tui-deck"
 footer: "Marp-Compatible Terminal Presentations"
@@ -108,6 +108,26 @@ const present = (slides) => {
 
 ---
 
+## Images
+
+Inline images with size control:
+
+![width:200px](assets/gradient.bmp)
+
+A logo with height constraint:
+
+![height:60px](assets/logo.bmp)
+
+---
+
+## Wide Banner Image
+
+![width:300px](assets/banner.bmp)
+
+Images are rendered using the **Kitty Graphics Protocol** with automatic fallback to half-block characters.
+
+---
+
 ## Blockquotes
 
 > The terminal is the original user interface.
@@ -129,7 +149,7 @@ Regular paragraph after a blockquote.
     ║  │           │   │             │  ║
     ║  │ Markdown  │   │   ratatui   │  ║
     ║  │    AST    │   │    Spans    │  ║
-    ║  └───────────┘   └──────────── ┘  ║
+    ║  └───────────┘   └─────────────┘  ║
     ║        │              │           ║
     ║        ▼              ▼           ║
     ║   pulldown-cmark   syntect        ║
@@ -147,6 +167,16 @@ Vertically centered content for emphasis slides.
 The `lead` class centers everything in the viewport.
 
 <!-- class: -->
+
+---
+
+![bg](assets/gradient.bmp)
+
+## Background Image
+
+This slide uses a **background image** via the `![bg]()` Marp syntax.
+
+Text overlays on top of the background.
 
 ---
 

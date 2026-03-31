@@ -1006,7 +1006,7 @@ mod tests {
 
         let renderer = SlideRenderer::new(80, 24, settings, slides.len());
         for slide in &slides {
-            let lines = renderer.render(slide);
+            let (lines, _) = renderer.render(slide);
             assert!(
                 !lines.is_empty(),
                 "slide {} should render lines",

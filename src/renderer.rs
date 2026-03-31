@@ -20,6 +20,16 @@ pub struct SlideRenderer {
     total_slides: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct ImageRegion {
+    pub url: String,
+    pub line_index: usize,
+    pub height_lines: usize,
+    pub width: Option<String>,
+    pub height_spec: Option<String>,
+    pub is_background: bool,
+}
+
 #[allow(dead_code)]
 struct ThemeColors {
     title: Color,
@@ -113,20 +123,34 @@ impl SlideRenderer {
         }
     }
 
-    pub fn render(&self, slide: &Slide) -> Vec<Line<'static>> {
+    pub fn render(&self, slide: &Slide) -> (Vec<Line<'static>>, Vec<ImageRegion>) {
         let mut lines = Vec::new();
+        let mut image_regions = Vec::new();
         let theme = resolve_theme_colors(slide, &self.settings);
         let is_lead = slide.class.iter().any(|c| c == "lead");
+
+        if let Some(image) = &slide.image {
+            if image.is_background {
+                image_regions.push(ImageRegion {
+                    url: image.url.clone(),
+                    line_index: 0,
+                    height_lines: self.height.saturating_sub(2),
+                    width: image.width.clone(),
+                    height_spec: image.height.clone(),
+                    is_background: true,
+                });
+            }
+        }
 
         let has_title = slide.title.is_some();
         let has_content = !slide.content.is_empty();
 
         if has_title && !has_content {
-            self.render_title_slide(slide, &theme, &mut lines);
+            self.render_title_slide(slide, &theme, &mut lines, &mut image_regions);
         } else if is_lead {
-            self.render_lead_slide(slide, &theme, &mut lines);
+            self.render_lead_slide(slide, &theme, &mut lines, &mut image_regions);
         } else {
-            self.render_content_slide(slide, &theme, &mut lines);
+            self.render_content_slide(slide, &theme, &mut lines, &mut image_regions);
         }
 
         if let Some(ref header) = slide.header {
@@ -165,7 +189,7 @@ impl SlideRenderer {
             }
         }
 
-        lines
+        (lines, image_regions)
     }
 
     fn total_slide_count_hint(&self) -> usize {
@@ -177,6 +201,7 @@ impl SlideRenderer {
         slide: &Slide,
         theme: &ThemeColors,
         lines: &mut Vec<Line<'static>>,
+        image_regions: &mut Vec<ImageRegion>,
     ) {
         let center_y = self.height / 2;
 
@@ -240,6 +265,26 @@ impl SlideRenderer {
                         lines.push(Line::from(format!("{}{}", " ".repeat(pl), item_str)));
                     }
                 }
+                SlideElement::Image(img) => {
+                    let max_image_height = self.height.saturating_div(3).clamp(3, 10);
+                    let height_lines = img
+                        .height
+                        .as_deref()
+                        .and_then(parse_marp_dimension_lines)
+                        .unwrap_or(max_image_height);
+                    let line_index = lines.len();
+                    image_regions.push(ImageRegion {
+                        url: img.url.clone(),
+                        line_index,
+                        height_lines,
+                        width: img.width.clone(),
+                        height_spec: img.height.clone(),
+                        is_background: img.is_background,
+                    });
+                    for _ in 0..height_lines {
+                        lines.push(Line::from(""));
+                    }
+                }
                 _ => {}
             }
         }
@@ -250,8 +295,11 @@ impl SlideRenderer {
         slide: &Slide,
         theme: &ThemeColors,
         lines: &mut Vec<Line<'static>>,
+        image_regions: &mut Vec<ImageRegion>,
     ) {
         let mut content_lines: Vec<Line<'static>> = Vec::new();
+
+        let mut content_y = 0;
 
         if !slide.title_inlines.is_empty() {
             let title_style = Style::default()
@@ -264,16 +312,30 @@ impl SlideRenderer {
             padded.extend(spans);
             content_lines.push(Line::from(padded));
             content_lines.push(Line::from(""));
+            content_y += 2;
         }
 
+        let mut content_image_regions = Vec::new();
         for element in &slide.content {
-            self.render_element_centered(element, theme, &mut content_lines);
+            self.render_element_centered(
+                element,
+                theme,
+                &mut content_lines,
+                &mut content_y,
+                &mut content_image_regions,
+            );
         }
 
         let start_y = self.height.saturating_sub(content_lines.len()) / 2;
         for _ in 0..start_y {
             lines.push(Line::from(""));
         }
+
+        for mut region in content_image_regions {
+            region.line_index += start_y;
+            image_regions.push(region);
+        }
+
         lines.extend(content_lines);
     }
 
@@ -282,6 +344,8 @@ impl SlideRenderer {
         element: &SlideElement,
         theme: &ThemeColors,
         lines: &mut Vec<Line<'static>>,
+        y: &mut usize,
+        image_regions: &mut Vec<ImageRegion>,
     ) {
         match element {
             SlideElement::Paragraph(inlines) | SlideElement::Plain(inlines) => {
@@ -290,6 +354,7 @@ impl SlideRenderer {
                 for line in wrapped {
                     let pad = (self.width.saturating_sub(line.len())) / 2;
                     lines.push(Line::from(format!("{}{}", " ".repeat(pad), line)));
+                    *y += 1;
                 }
             }
             SlideElement::BulletList(items) => {
@@ -298,12 +363,13 @@ impl SlideRenderer {
                     let item_str = format!("• {}", text);
                     let pad = (self.width.saturating_sub(item_str.len())) / 2;
                     lines.push(Line::from(format!("{}{}", " ".repeat(pad), item_str)));
+                    *y += 1;
                 }
             }
             _ => {
                 let mut tmp = Vec::new();
-                let mut y = 0;
-                self.render_element(element, theme, &mut tmp, &mut y);
+                let mut tmp_y = *y;
+                self.render_element(element, theme, &mut tmp, &mut tmp_y, image_regions);
                 let max_width = tmp
                     .iter()
                     .map(|l| {
@@ -324,6 +390,7 @@ impl SlideRenderer {
                     );
                     lines.push(Line::from(centered));
                 }
+                *y = tmp_y;
             }
         }
     }
@@ -333,6 +400,7 @@ impl SlideRenderer {
         slide: &Slide,
         theme: &ThemeColors,
         lines: &mut Vec<Line<'static>>,
+        image_regions: &mut Vec<ImageRegion>,
     ) {
         let mut y = 1;
 
@@ -359,7 +427,7 @@ impl SlideRenderer {
         }
 
         for element in &slide.content {
-            self.render_element(element, theme, lines, &mut y);
+            self.render_element(element, theme, lines, &mut y, image_regions);
         }
     }
 
@@ -369,6 +437,7 @@ impl SlideRenderer {
         theme: &ThemeColors,
         lines: &mut Vec<Line<'static>>,
         y: &mut usize,
+        image_regions: &mut Vec<ImageRegion>,
     ) {
         match element {
             SlideElement::Heading(level, inlines) => {
@@ -516,19 +585,27 @@ impl SlideRenderer {
                 }
             }
             SlideElement::Image(img) => {
-                let mut desc = format!("[Image: {}", img.url);
-                if let Some(ref w) = img.width {
-                    desc.push_str(&format!(" w:{}", w));
+                let max_image_height = self.height.saturating_div(3).clamp(3, 10);
+                let height_lines = img
+                    .height
+                    .as_deref()
+                    .and_then(parse_marp_dimension_lines)
+                    .unwrap_or(max_image_height);
+
+                let line_index = *y;
+                image_regions.push(ImageRegion {
+                    url: img.url.clone(),
+                    line_index,
+                    height_lines,
+                    width: img.width.clone(),
+                    height_spec: img.height.clone(),
+                    is_background: img.is_background,
+                });
+
+                for _ in 0..height_lines {
+                    lines.push(Line::from(""));
                 }
-                if let Some(ref h) = img.height {
-                    desc.push_str(&format!(" h:{}", h));
-                }
-                desc.push(']');
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", desc),
-                    Style::default().fg(theme.dim),
-                )));
-                *y += 1;
+                *y += height_lines;
             }
             SlideElement::ColumnBreak => {}
         }
@@ -694,6 +771,18 @@ impl SlideRenderer {
         }
 
         result
+    }
+}
+
+fn parse_marp_dimension_lines(value: &str) -> Option<usize> {
+    let trimmed = value.trim();
+    let number_part = trimmed.trim_end_matches("px").trim_end_matches('%').trim();
+    let value = number_part.parse::<usize>().ok()?;
+
+    if trimmed.ends_with('%') {
+        Some((value / 10).max(1))
+    } else {
+        Some((value / 24).max(1))
     }
 }
 

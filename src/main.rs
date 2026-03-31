@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -12,19 +13,20 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::Line,
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use std::sync::Mutex;
 
 mod parser;
 mod renderer;
 
-use parser::{DeckSettings, Slide};
-use renderer::SlideRenderer;
+use parser::{DeckSettings, Slide, SlideElement};
+use renderer::{ImageRegion, SlideRenderer};
 
 #[derive(Parser)]
 #[command(name = "tui-deck")]
@@ -45,15 +47,21 @@ struct AppState {
     current_index: usize,
     start_time: Instant,
     settings: DeckSettings,
+    picker: Picker,
+    image_states: HashMap<String, StatefulProtocol>,
+    slide_dir: PathBuf,
 }
 
 impl AppState {
-    fn new(slides: Vec<Slide>, settings: DeckSettings) -> Self {
+    fn new(slides: Vec<Slide>, settings: DeckSettings, picker: Picker, slide_dir: PathBuf) -> Self {
         Self {
             slides,
             current_index: 0,
             start_time: Instant::now(),
             settings,
+            picker,
+            image_states: HashMap::new(),
+            slide_dir,
         }
     }
 
@@ -75,35 +83,81 @@ impl AppState {
     fn next(&mut self) {
         if self.current_index + 1 < self.slides.len() {
             self.current_index += 1;
+            self.prune_image_states_for_current_slide();
         }
     }
 
     fn prev(&mut self) {
         if self.current_index > 0 {
             self.current_index -= 1;
+            self.prune_image_states_for_current_slide();
         }
+    }
+
+    fn ensure_images_loaded(&mut self, regions: &[ImageRegion]) {
+        for region in regions {
+            let _ = self.ensure_image_loaded(region);
+        }
+    }
+
+    fn ensure_image_loaded(&mut self, region: &ImageRegion) -> Result<()> {
+        if self.image_states.contains_key(&region.url) {
+            return Ok(());
+        }
+
+        let image_path = resolve_image_path(&self.slide_dir, &region.url);
+        let dyn_img = image::ImageReader::open(&image_path)?.decode()?;
+        let protocol = self.picker.new_resize_protocol(dyn_img);
+
+        self.image_states.insert(region.url.clone(), protocol);
+        Ok(())
+    }
+
+    fn prune_image_states_for_current_slide(&mut self) {
+        let mut keep = HashSet::new();
+        if let Some(bg) = self.current_slide().image.as_ref() {
+            keep.insert(bg.url.clone());
+        }
+        for element in &self.current_slide().content {
+            if let SlideElement::Image(img) = element {
+                keep.insert(img.url.clone());
+            }
+        }
+
+        self.image_states.retain(|url, _| keep.contains(url));
     }
 }
 
-fn render_slide(frame: &mut Frame, state: &AppState) {
+fn render_slide(frame: &mut Frame, state: &mut AppState) {
     let chunks = Layout::default()
         .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(frame.area());
 
-    let slide = state.current_slide();
+    let slide = state.current_slide().clone();
     let renderer = SlideRenderer::new(
         chunks[0].width as usize,
         chunks[0].height as usize,
         state.settings.clone(),
         state.total_slides(),
     );
-    let lines = renderer.render(slide);
+    let (lines, image_regions) = renderer.render(&slide);
+    state.ensure_images_loaded(&image_regions);
 
+    let has_bg_image = image_regions.iter().any(|region| region.is_background);
     let bg_color = slide
         .background_color
         .as_deref()
-        .and_then(|c| parse_css_color_simple(c))
+        .and_then(parse_css_color_simple)
         .unwrap_or(Color::Rgb(26, 26, 46));
+
+    let inner_area = inset_block_area(chunks[0]);
+    for region in image_regions.iter().filter(|r| r.is_background) {
+        if let Some(image_rect) = image_region_rect(region, inner_area) {
+            if let Some(protocol) = state.image_states.get_mut(&region.url) {
+                frame.render_stateful_widget(StatefulImage::default(), image_rect, protocol);
+            }
+        }
+    }
 
     let slide_paragraph = Paragraph::new(
         lines
@@ -119,9 +173,21 @@ fn render_slide(frame: &mut Frame, state: &AppState) {
             .collect::<Vec<_>>(),
     )
     .block(Block::default().title(" tui-deck ").borders(Borders::ALL))
-    .style(Style::default().bg(bg_color));
+    .style(if has_bg_image {
+        Style::default()
+    } else {
+        Style::default().bg(bg_color)
+    });
 
     frame.render_widget(slide_paragraph, chunks[0]);
+
+    for region in image_regions.iter().filter(|r| !r.is_background) {
+        if let Some(image_rect) = image_region_rect(region, inner_area) {
+            if let Some(protocol) = state.image_states.get_mut(&region.url) {
+                frame.render_stateful_widget(StatefulImage::default(), image_rect, protocol);
+            }
+        }
+    }
 
     let progress_text = format!(
         " Slide {}/{} │ {} │ j/k or ←/→ Navigate │ q Quit ",
@@ -187,9 +253,12 @@ fn run_presenter_client(
     socket_path: PathBuf,
     slides: Vec<Slide>,
     settings: DeckSettings,
+    slide_dir: PathBuf,
 ) -> Result<()> {
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    let mut image_states: HashMap<String, StatefulProtocol> = HashMap::new();
 
     terminal::enable_raw_mode()?;
     execute!(std::io::stdout(), terminal::EnterAlternateScreen)?;
@@ -258,14 +327,32 @@ fn run_presenter_client(
                 }
 
                 let slide = &slides[state.0.min(slides.len().saturating_sub(1))];
-
                 let renderer = SlideRenderer::new(
                     chunks[0].width as usize,
                     chunks[0].height as usize,
                     settings.clone(),
                     slides.len(),
                 );
-                let current_lines = renderer.render(slide);
+                let (current_lines, current_regions) = renderer.render(slide);
+                ensure_protocols_loaded(
+                    &mut picker,
+                    &mut image_states,
+                    &slide_dir,
+                    &current_regions,
+                );
+
+                let current_inner = inset_block_area(chunks[0]);
+                for region in current_regions.iter().filter(|r| r.is_background) {
+                    if let Some(image_rect) = image_region_rect(region, current_inner) {
+                        if let Some(protocol) = image_states.get_mut(&region.url) {
+                            f.render_stateful_widget(
+                                StatefulImage::default(),
+                                image_rect,
+                                protocol,
+                            );
+                        }
+                    }
+                }
 
                 let current = Paragraph::new(
                     current_lines
@@ -288,8 +375,19 @@ fn run_presenter_client(
                         .borders(Borders::ALL),
                 )
                 .style(Style::default().bg(Color::Rgb(26, 26, 46)));
-
                 f.render_widget(current, chunks[0]);
+
+                for region in current_regions.iter().filter(|r| !r.is_background) {
+                    if let Some(image_rect) = image_region_rect(region, current_inner) {
+                        if let Some(protocol) = image_states.get_mut(&region.url) {
+                            f.render_stateful_widget(
+                                StatefulImage::default(),
+                                image_rect,
+                                protocol,
+                            );
+                        }
+                    }
+                }
 
                 if state.0 + 1 < slides.len() {
                     let next = &slides[state.0 + 1];
@@ -299,7 +397,26 @@ fn run_presenter_client(
                         settings.clone(),
                         slides.len(),
                     );
-                    let next_lines = next_renderer.render(next);
+                    let (next_lines, next_regions) = next_renderer.render(next);
+                    ensure_protocols_loaded(
+                        &mut picker,
+                        &mut image_states,
+                        &slide_dir,
+                        &next_regions,
+                    );
+
+                    let next_inner = inset_block_area(chunks[1]);
+                    for region in next_regions.iter().filter(|r| r.is_background) {
+                        if let Some(image_rect) = image_region_rect(region, next_inner) {
+                            if let Some(protocol) = image_states.get_mut(&region.url) {
+                                f.render_stateful_widget(
+                                    StatefulImage::default(),
+                                    image_rect,
+                                    protocol,
+                                );
+                            }
+                        }
+                    }
 
                     let next_paragraph = Paragraph::new(
                         next_lines
@@ -323,10 +440,21 @@ fn run_presenter_client(
                     .style(Style::default().bg(Color::Rgb(26, 26, 46)));
 
                     f.render_widget(next_paragraph, chunks[1]);
+
+                    for region in next_regions.iter().filter(|r| !r.is_background) {
+                        if let Some(image_rect) = image_region_rect(region, next_inner) {
+                            if let Some(protocol) = image_states.get_mut(&region.url) {
+                                f.render_stateful_widget(
+                                    StatefulImage::default(),
+                                    image_rect,
+                                    protocol,
+                                );
+                            }
+                        }
+                    }
                 }
 
                 let notes_text = state.2.clone().unwrap_or_else(|| "No notes".to_string());
-
                 let notes = Paragraph::new(notes_text)
                     .block(
                         Block::default()
@@ -356,7 +484,12 @@ fn run_presenter_client(
     Ok(())
 }
 
-fn run_server(socket_path: PathBuf, slides: Vec<Slide>, settings: DeckSettings) -> Result<()> {
+fn run_server(
+    socket_path: PathBuf,
+    slides: Vec<Slide>,
+    settings: DeckSettings,
+    slide_dir: PathBuf,
+) -> Result<()> {
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
     }
@@ -364,10 +497,13 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>, settings: DeckSettings) 
     let listener = UnixListener::bind(&socket_path)?;
     listener.set_nonblocking(true)?;
 
-    let state = Arc::new(Mutex::new(AppState::new(slides, settings)));
-
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+
+    let state = Arc::new(Mutex::new(AppState::new(
+        slides, settings, picker, slide_dir,
+    )));
 
     terminal::enable_raw_mode()?;
     execute!(std::io::stdout(), terminal::EnterAlternateScreen)?;
@@ -451,8 +587,8 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>, settings: DeckSettings) 
 
         terminal
             .draw(|f| {
-                let s = state.lock().unwrap();
-                render_slide(f, &s);
+                let mut s = state.lock().unwrap();
+                render_slide(f, &mut s);
             })
             .unwrap();
 
@@ -467,6 +603,119 @@ fn run_server(socket_path: PathBuf, slides: Vec<Slide>, settings: DeckSettings) 
     execute!(std::io::stdout(), terminal::LeaveAlternateScreen)?;
 
     Ok(())
+}
+
+fn resolve_image_path(slide_dir: &Path, url: &str) -> PathBuf {
+    let raw = Path::new(url);
+    if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        slide_dir.join(raw)
+    }
+}
+
+fn ensure_protocols_loaded(
+    picker: &mut Picker,
+    image_states: &mut HashMap<String, StatefulProtocol>,
+    slide_dir: &Path,
+    regions: &[ImageRegion],
+) {
+    for region in regions {
+        if image_states.contains_key(&region.url) {
+            continue;
+        }
+
+        let path = resolve_image_path(slide_dir, &region.url);
+        let Ok(reader) = image::ImageReader::open(path) else {
+            continue;
+        };
+        let Ok(img) = reader.decode() else {
+            continue;
+        };
+
+        let protocol = picker.new_resize_protocol(img);
+        image_states.insert(region.url.clone(), protocol);
+    }
+}
+
+fn inset_block_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
+}
+
+fn parse_region_lines(value: &str, total: u16, fallback: u16) -> u16 {
+    let trimmed = value.trim();
+    let number = trimmed
+        .trim_end_matches("px")
+        .trim_end_matches('%')
+        .trim()
+        .parse::<u16>()
+        .ok();
+
+    let Some(value) = number else {
+        return fallback;
+    };
+
+    if trimmed.ends_with('%') {
+        ((total.saturating_mul(value)).saturating_div(100)).max(1)
+    } else {
+        value.saturating_div(24).max(1)
+    }
+}
+
+fn image_region_rect(region: &ImageRegion, inner_area: Rect) -> Option<Rect> {
+    if inner_area.width == 0 || inner_area.height == 0 {
+        return None;
+    }
+
+    let line = u16::try_from(region.line_index).ok()?;
+    if line >= inner_area.height {
+        return None;
+    }
+
+    let y = inner_area.y.saturating_add(line);
+    let available_h = inner_area.height.saturating_sub(line);
+    let fallback_h = u16::try_from(region.height_lines)
+        .unwrap_or(available_h)
+        .max(1);
+    let mut h = region
+        .height_spec
+        .as_deref()
+        .map(|v| parse_region_lines(v, inner_area.height, fallback_h))
+        .unwrap_or(fallback_h)
+        .min(available_h)
+        .max(1);
+
+    if region.is_background {
+        h = inner_area.height;
+    }
+
+    let mut w = region
+        .width
+        .as_deref()
+        .map(|v| parse_region_lines(v, inner_area.width, inner_area.width))
+        .unwrap_or(inner_area.width)
+        .min(inner_area.width)
+        .max(1);
+
+    let mut x = inner_area.x;
+    if region.is_background {
+        w = inner_area.width;
+        h = inner_area.height;
+    } else if w < inner_area.width {
+        x = inner_area.x + (inner_area.width - w) / 2;
+    }
+
+    Some(Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    })
 }
 
 fn parse_css_color_simple(color: &str) -> Option<Color> {
@@ -495,9 +744,15 @@ fn main() -> Result<()> {
         anyhow::bail!("No slides found in {}", args.file.display());
     }
 
+    let slide_dir = args
+        .file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
     if args.presenter {
-        run_presenter_client(args.socket, slides, settings)
+        run_presenter_client(args.socket, slides, settings, slide_dir)
     } else {
-        run_server(args.socket, slides, settings)
+        run_server(args.socket, slides, settings, slide_dir)
     }
 }

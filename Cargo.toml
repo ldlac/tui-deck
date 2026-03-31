@@ -4,15 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ratatui = "0.28"
+ratatui = "0.30"
 pulldown-cmark = "0.12"
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-crossterm = "0.28"
+crossterm = "0.29"
 unicode-width = "0.1"
+ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"] }
+image = "0.25"
 
 [profile.release]
 strip = true
