@@ -304,7 +304,26 @@ impl SlideRenderer {
                 let mut tmp = Vec::new();
                 let mut y = 0;
                 self.render_element(element, theme, &mut tmp, &mut y);
-                lines.extend(tmp);
+                let max_width = tmp
+                    .iter()
+                    .map(|l| {
+                        l.spans
+                            .iter()
+                            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                            .sum::<usize>()
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let pad = self.width.saturating_sub(max_width) / 2;
+                for line in tmp {
+                    let mut centered = vec![Span::raw(" ".repeat(pad))];
+                    centered.extend(
+                        line.spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style)),
+                    );
+                    lines.push(Line::from(centered));
+                }
             }
         }
     }
