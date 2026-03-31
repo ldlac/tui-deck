@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
+use unicode_width::UnicodeWidthStr;
 
 use crate::parser::{Slide, SlideElement, SlideType};
 
@@ -196,7 +197,8 @@ impl SlideRenderer {
                 for row in rows {
                     for (i, cell) in row.iter().enumerate() {
                         if i < num_cols {
-                            col_widths[i] = col_widths[i].max(cell.len());
+                            col_widths[i] =
+                                col_widths[i].max(UnicodeWidthStr::width(cell.as_str()));
                         }
                     }
                 }
@@ -206,16 +208,17 @@ impl SlideRenderer {
                         .enumerate()
                         .map(|(i, cell)| {
                             let w = col_widths[i];
-                            format!("{}{}", cell, " ".repeat(w.saturating_sub(cell.len())))
+                            let display_width = UnicodeWidthStr::width(cell.as_str());
+                            format!("{}{}", cell, " ".repeat(w.saturating_sub(display_width)))
                         })
                         .collect();
-                    let row_str = cells.join(" | ");
-                    lines.push(Line::from(row_str));
+                    let row_str = cells.join(" │ ");
+                    lines.push(Line::from(format!("  {}", row_str)));
                     *y += 1;
                     if row_idx == 0 && rows.len() > 1 {
-                        let sep: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w)).collect();
-                        let sep_str = sep.join(" | ");
-                        lines.push(Line::from(sep_str));
+                        let sep: Vec<String> = col_widths.iter().map(|w| "─".repeat(*w)).collect();
+                        let sep_str = sep.join("─┼─");
+                        lines.push(Line::from(format!("  {}", sep_str)));
                         *y += 1;
                     }
                 }
